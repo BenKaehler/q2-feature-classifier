@@ -121,7 +121,7 @@ def fit_classifier_keras(reference_reads: DNAIterator,
     elif sequence_encoder == 'Seq2VecEncoder':
         x_encoder = Seq2VecEncoder(k, vec_length, window, read_length, n_jobs)
     elif sequence_encoder == 'KmerEncoder':
-        raise NotImplementedError()
+        raise NotImplementedError() # probably using HashingVectorizer for this
 
     y_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
 
@@ -135,6 +135,28 @@ def fit_classifier_keras(reference_reads: DNAIterator,
     model.fit_generator(generator, epochs=epochs)
 
     return x_encoder, y_encoder, model
+
+
+plugin.methods.register_function(
+    function=fit_classifier_keras,
+    inputs={'reference_reads': FeatureData[Sequence],
+            'reference_taxonomy': FeatureData[Taxonomy]},
+            'classifer_specification': ClassifierSpecification},
+    parameters={'sequence_encoder': Str % Choices(
+        ['Seq2VecEncoder', 'DNAEncoder', 'KmerEncoder']),
+                'read_length': Int,
+                'k': Int,
+                'vec_length': Int,
+                'window': Int,
+                'n_jobs': Int,
+                'loss': Str,
+                'optimizer': Str,
+                'batch_size': Int,
+                'epochs': Int},
+    outputs=[('classifier', KerasClassifier)],
+    name='Fit a Keras-based taxonomic classifier',
+    description='Create a Keras classifier for reads'
+) # EEEE input_descriptions, parameter_descriptions, and citations
 
 
 def classify_keras(reads: DNAIterator, classifier: tuple,
@@ -155,3 +177,15 @@ def classify_keras(reads: DNAIterator, classifier: tuple,
                           index=seq_ids, columns=['Taxon', 'Confidence'])
     result.index.name = 'Feature ID'
     return result
+
+
+plugin.methods.register_function(
+    function=classify_keras,
+    inputs={'reads': FeatureData[Sequence],
+            'classifier': KerasClassifier}
+    parameters={'confidence': Float,
+                'batch_size': Int},
+    outputs=[('classification', FeatureData[Taxonomy])],
+    name='Pre-fitted Keras-based taxonomy classifier',
+    description='Classify reads by txon using a fitted classifier.'
+) # EEEE input_descriptions, parameter_descriptions, and citations

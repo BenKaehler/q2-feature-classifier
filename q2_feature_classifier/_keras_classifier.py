@@ -14,8 +14,12 @@ from .plugin_setup import plugin
 
 
 # Semantic Types
+ClassifierSpecification = qiime2.plugin.SemanticType('ClassifierSpecification')
 KerasClassifier = qiime2.plugin.SemanticType('KerasClassifier')
 
+class ClassifierSpecificationDirFmt(model.DirectoryFormat):
+    classifier_specification = model.File(
+        'classifier_specification.json', format=JSONFormat)
 
 class KerasClassifierPickleDirFmt(model.DirectoryFormat):
     y_encoder = model.File('y_encoder.json', format=JSONFormat)

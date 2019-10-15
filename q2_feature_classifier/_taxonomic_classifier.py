@@ -54,7 +54,7 @@ class TaxonomicClassiferTemporaryPickleDirFmt(model.DirectoryFormat):
 # Transformers
 @plugin.register_transformer
 def _1(dirfmt: TaxonomicClassiferTemporaryPickleDirFmt) -> Pipeline:
-    sklearn_version = dirfmt.version_info.view(dict)['sklearn-version']
+    sklearn_version = dirfmt.version_info.view(object)['sklearn-version']
     if sklearn_version != sklearn.__version__:
         raise ValueError('The scikit-learn version (%s) used to generate this'
                          ' artifact does not match the current version'
@@ -88,7 +88,7 @@ def _2(data: Pipeline) -> TaxonomicClassiferTemporaryPickleDirFmt:
 
     dirfmt = TaxonomicClassiferTemporaryPickleDirFmt()
     dirfmt.version_info.write_data(
-        {'sklearn-version': sklearn.__version__}, dict)
+        {'sklearn-version': sklearn.__version__}, object)
     dirfmt.sklearn_pipeline.write_data(sklearn_pipeline, PickleFormat)
 
     return dirfmt
@@ -102,13 +102,13 @@ def _3(dirfmt: TaxonomicClassifierDirFmt) -> Pipeline:
 
 
 @plugin.register_transformer
-def _4(fmt: JSONFormat) -> dict:
+def _4(fmt: JSONFormat) -> object:
     with fmt.open() as fh:
         return json.load(fh)
 
 
 @plugin.register_transformer
-def _5(data: dict) -> JSONFormat:
+def _5(data: object) -> JSONFormat:
     result = JSONFormat()
     with result.open() as fh:
         json.dump(data, fh)
