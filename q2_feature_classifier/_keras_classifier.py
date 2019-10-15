@@ -8,6 +8,8 @@
 
 import qiime2.plugin
 import qiime2.plugin.model as model
+import h5py
+from keras.model import load_model
 
 from ._taxonomic_classifier import PickleFormat, JSONFormat
 from .plugin_setup import plugin
@@ -17,19 +19,48 @@ from .plugin_setup import plugin
 ClassifierSpecification = qiime2.plugin.SemanticType('ClassifierSpecification')
 KerasClassifier = qiime2.plugin.SemanticType('KerasClassifier')
 
-class ClassifierSpecificationDirFmt(model.DirectoryFormat):
-    classifier_specification = model.File(
-        'classifier_specification.json', format=JSONFormat)
+# Formats
+ClassifierSpecificationDirectoryFormat = model.SingleFileDirectoryFormat(
+    'ClassifierSpecificationDirectoryFormat', 'classifier-specification.json',
+    JSONFormat)
 
-class KerasClassifierPickleDirFmt(model.DirectoryFormat):
+class KerasModelFormat(model.BinaryFileFormat):
+    def sniff(self):
+        return h5py.is_hdf5(str(self))
+
+class KerasClassifierDirectoryFormat(model.DirectoryFormat):
     y_encoder = model.File('y_encoder.json', format=JSONFormat)
     x_encoder = model.File('x_encoder.json', format=JSONFormat)
-    keras_pipeline = model.File('keras_model.tar', format=PickleFormat)
+    keras_model = model.File('keras_model.hdf5', format=KerasModelFormat)
 
 
 # Transformers
-@plugin.regist_transformer
-def _1(dirfmt: KerasClassifierPickleDirFmt) -> KerasPipeline:
-    x_encoder_spec = dirfmt.x_encoder.view(object)
-    y_encoder_spec = dirfmt.y_encoder.view(object)
+@plugin.register_transformer
+def _1(dirfmt: KerasClassifierDirectoryFomat) -> tuple:
+    x_encoder = dirfmt.x_encoder.view(object)
+    y_encoder = dirfmt.y_encoder.view(object)
+    keras_model_format = dirfmt.keras_model.view(KerasModelFormat)
+    keras_model = load_model(str(keras_model_format))
+    return (x_encoder, y_encoder, keras_model)
+
+@plugin.register_transformer
+def _2(data: tuple) -> KerasClassifierDirectoryFormat:
+    x_encoder, y_encoder, keras_model = data
+    dirfmt = KerasClassifierDirectoryFormat()
+    dirfmt.x_encoder.write_data(x_encoder, object)
+    dirfmt.y_encoder.write_data(y_encoder, object)
+
+    keras_model_format = KerasModelFormat()
+    keras_model.save(str(keras_model_format))
+    dirfmt.keras_model.write_data(keras_model_format, KerasModelFormat)
+
+    return dirfmt
+
+# Registrations
+plugin.register_semantic_types(ClassifierSpecification)
+plugin.register_formats(ClassifierSpecificationDirectoryFormat)
+plugin.register_semantic_type_to_format(
+    ClassifierSpecification,
+    artifact_format=ClassifierSpecificationDirectoryFormat
+)
 
