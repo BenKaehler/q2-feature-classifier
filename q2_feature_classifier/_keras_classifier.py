@@ -9,9 +9,9 @@
 import qiime2.plugin
 import qiime2.plugin.model as model
 import h5py
-from keras.model import load_model
+from keras.models import load_model
 
-from ._taxonomic_classifier import PickleFormat, JSONFormat
+from ._taxonomic_classifier import JSONFormat
 from .plugin_setup import plugin
 
 
@@ -24,9 +24,11 @@ ClassifierSpecificationDirectoryFormat = model.SingleFileDirectoryFormat(
     'ClassifierSpecificationDirectoryFormat', 'classifier-specification.json',
     JSONFormat)
 
+
 class KerasModelFormat(model.BinaryFileFormat):
     def sniff(self):
         return h5py.is_hdf5(str(self))
+
 
 class KerasClassifierDirectoryFormat(model.DirectoryFormat):
     y_encoder = model.File('y_encoder.json', format=JSONFormat)
@@ -36,12 +38,13 @@ class KerasClassifierDirectoryFormat(model.DirectoryFormat):
 
 # Transformers
 @plugin.register_transformer
-def _1(dirfmt: KerasClassifierDirectoryFomat) -> tuple:
+def _1(dirfmt: KerasClassifierDirectoryFormat) -> tuple:
     x_encoder = dirfmt.x_encoder.view(object)
     y_encoder = dirfmt.y_encoder.view(object)
     keras_model_format = dirfmt.keras_model.view(KerasModelFormat)
     keras_model = load_model(str(keras_model_format))
     return (x_encoder, y_encoder, keras_model)
+
 
 @plugin.register_transformer
 def _2(data: tuple) -> KerasClassifierDirectoryFormat:
@@ -56,6 +59,7 @@ def _2(data: tuple) -> KerasClassifierDirectoryFormat:
 
     return dirfmt
 
+
 # Registrations
 plugin.register_semantic_types(ClassifierSpecification)
 plugin.register_formats(ClassifierSpecificationDirectoryFormat)
@@ -63,4 +67,3 @@ plugin.register_semantic_type_to_format(
     ClassifierSpecification,
     artifact_format=ClassifierSpecificationDirectoryFormat
 )
-
