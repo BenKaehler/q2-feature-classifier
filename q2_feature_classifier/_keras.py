@@ -7,21 +7,25 @@
 # ----------------------------------------------------------------------------
 
 import json
+
 from q2_types.feature_data import (
     FeatureData, Taxonomy, Sequence, DNAIterator)
 from qiime2.plugin import Int, Str, Float, Choices
 import pandas as pd
 from numpy import array, zeros, ceil
 import gensim
+from sklearn.base import BaseEstimator
 from sklearn.preprocessing import OneHotEncoder
 from keras.utils import Sequence as KerasSequence
 from keras.models import model_from_json
 
 from .plugin_setup import plugin  # , citations
-from ._keras_classifier import ClassifierSpecification, KerasClassifier
+from ._keras_classifier import (
+    ClassifierSpecification, KerasClassifier, Klassifier)
+from .classifier import _load_class
 
 
-class DNAEncoder(object):
+class DNAEncoder(BaseEstimator):
     _encoding = {'A': [1, 0, 0, 0],
                  'C': [0, 1, 0, 0],
                  'G': [0, 0, 1, 0],
@@ -56,14 +60,19 @@ class DNAEncoder(object):
 
         return array([transform_one(seq) for seq in X])
 
+    def get_params(self):
+        return dict(pad_length=self.pad_length)
 
-class Seq2VecEncoder(object):
-    def __init__(self, k=7, size=300, window=5, pad_length=None, workers=1):
+
+class Seq2VecEncoder(BaseEstimator):
+    def __init__(self, k=7, size=300, window=5, pad_length=None, workers=1,
+                 weights=None):
         self.k = k
         self.size = size
         self.window = window
         self.pad_length = pad_length
         self.workers = workers
+        self.weights = weights
 
     def fit(self, X):
         seqs = [[s[i:i+self.k] for i in range(len(s)-self.k+1)] for s in X]
@@ -82,6 +91,55 @@ class Seq2VecEncoder(object):
             return sentence
 
         return array([transform_one(seq) for seq in X])
+
+    def get_params(self):
+        return dict(k=self.k, size=self.size, window=self.window,
+                    pad_length=self.pad_length, workers=self.workers,
+                    weights=self.weights)
+
+
+# I'm keeping the spec_from_encoder and encoder_from_spec funtions for the
+# moment, in case we want to enable them as specification inputs to
+# fit-classifier-keras. But they're on notice.
+def spec_from_encoder(encoder):
+    class EncoderEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if hasattr(obj, 'get_params'):
+                encoded = {}
+                params = obj.get_params()
+                subobjs = []
+                for key, value in params.items():
+                    if hasattr(value, 'get_params'):
+                        subobjs.append(key + '__')
+
+                for key, value in params.items():
+                    for so in subobjs:
+                        if key.startswith(so):
+                            break
+                    else:
+                        if hasattr(value, 'get_params'):
+                            encoded[key] = self.default(value)
+                        try:
+                            json.dumps(value, cls=EncoderEncoder)
+                            encoded[key] = value
+                        except TypeError:
+                            pass
+
+                module = obj.__module__
+                type = module + '.' + obj.__class__.__name__
+                encoded['__type__'] = type.split('.', 1)[1]
+                return encoded
+            return json.JSONEncoder.default(self, obj)
+    return json.loads(json.dumps(encoder, cls=EncoderEncoder))
+
+
+def encoder_from_spec(spec):
+    def object_hook(obj):
+        if '__type__' in obj:
+            klass = _load_class(obj['__type__'])
+            return klass(**{k: v for k, v in obj.items() if k != '__type__'})
+        return obj
+    return json.loads(json.dumps(spec), object_hook=object_hook)
 
 
 class TaxonomicGenerator(KerasSequence):
@@ -105,9 +163,25 @@ class TaxonomicGenerator(KerasSequence):
         return batch_X, batch_y
 
 
+class XGenerator(KerasSequence):
+    def __init__(self, X, X_encoder, batch_size):
+        self.X = X
+        self.X_encoder = X_encoder
+        self.batch_size = batch_size
+
+    def __len__(self):
+        return int(ceil(len(self.X) / float(self.batch_size)))
+
+    def __getitem__(self, idx):
+        batch_X = self.X[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_X = self.X_encoder.transform(batch_X)
+
+        return batch_X
+
+
 def fit_classifier_keras(reference_reads: DNAIterator,
                          reference_taxonomy: pd.Series,
-                         classifier_specification: object,
+                         classifier_specification: dict,
                          sequence_encoder: str = 'Seq2VecEncoder',
                          read_length: int = 300,
                          k: int = 7,
@@ -117,7 +191,7 @@ def fit_classifier_keras(reference_reads: DNAIterator,
                          loss: str = 'categorical_crossentropy',
                          optimizer: str = 'adam',
                          batch_size: int = 256,
-                         epochs: int = 50) -> tuple:
+                         epochs: int = 50) -> Klassifier:
     X, y = zip(*[(str(s), [reference_taxonomy[s.metadata['id']]])
                  for s in reference_reads])
 
@@ -135,12 +209,13 @@ def fit_classifier_keras(reference_reads: DNAIterator,
     y_encoder.fit(y)
 
     generator = TaxonomicGenerator(X, y, x_encoder, y_encoder, batch_size)
-
+    classifier_specification['config']['layers'][-1]['config']['units'] = \
+        y_encoder.transform([y[0]]).shape[1]
     model = model_from_json(json.dumps(classifier_specification))
     model.compile(loss=loss, optimizer=optimizer)
     model.fit_generator(generator, epochs=epochs)
 
-    return x_encoder, y_encoder, model
+    return Klassifier(x_encoder, y_encoder, model)
 
 
 plugin.methods.register_function(
@@ -165,16 +240,15 @@ plugin.methods.register_function(
 )  # EEEE input_descriptions, parameter_descriptions, and citations
 
 
-def classify_keras(reads: DNAIterator, classifier: tuple,
+def classify_keras(reads: DNAIterator, classifier: Klassifier,
                    confidence: float, batch_size: int = 256
                    ) -> pd.DataFrame:
     x_encoder, y_encoder, model = classifier
-    X, seq_ids = zip((str(s), s.metadata['id']) for s in reads)
-    generator = TaxonomicGenerator(X, [[]]*len(X), x_encoder, y_encoder,
-                                   batch_size)
+    X, seq_ids = zip(*[(str(s), s.metadata['id']) for s in reads])
+    generator = XGenerator(X, x_encoder, batch_size)
     y = model.predict_generator(generator)
     if confidence < 0:
-        taxonomy = y_encoder.inverse_transform(y)
+        taxonomy = [t for [t] in y_encoder.inverse_transform(y)]
         confidence = [-1]*len(y)
     else:
         raise NotImplementedError()

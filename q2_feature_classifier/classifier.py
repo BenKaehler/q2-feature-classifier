@@ -37,6 +37,8 @@ def _load_class(classname):
     module, klass = classname.rsplit('.', 1)
     if module == 'custom':
         module = importlib.import_module('.custom', 'q2_feature_classifier')
+    elif module == '_keras':
+        module = importlib.import_module('._keras', 'q2_feature_classifier')
     elif importlib.util.find_spec('.'+module, 'sklearn') is not None:
         module = importlib.import_module('.'+module, 'sklearn')
     else:
