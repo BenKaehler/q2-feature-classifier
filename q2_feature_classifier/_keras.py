@@ -86,7 +86,7 @@ class Seq2VecEncoder(BaseEstimator):
     def transform(self, X):
         def transform_one(seq):
             sentence = zeros((self.pad_length, self.size))
-            for i in range(len(seq) - self.k+1):
+            for i in range(min(len(seq) - self.k+1, self.pad_length)):
                 sentence[i] = self.weights[seq[i:i+self.k]]
             return sentence
 
@@ -177,6 +177,25 @@ class XGenerator(KerasSequence):
         batch_X = self.X_encoder.transform(batch_X)
 
         return batch_X
+
+
+def tensorflow_gpu_kludge():
+    import tensorflow as tf
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            # Currently, memory growth needs to be the same across GPUs
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+            print(len(gpus), "Physical GPUs,", len(logical_gpus),
+                  "Logical GPUs")
+        except RuntimeError as e:
+            # Memory growth must be set before GPUs have been initialized
+            print(e)
+
+
+tensorflow_gpu_kludge()
 
 
 def fit_classifier_keras(reference_reads: DNAIterator,
