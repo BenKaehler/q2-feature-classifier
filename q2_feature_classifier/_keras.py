@@ -10,6 +10,7 @@ import json
 
 from q2_types.feature_data import (
     FeatureData, Taxonomy, Sequence, DNAIterator)
+from q2_types.feature_table import FeatureTable, RelativeFrequency
 from qiime2.plugin import Int, Str, Float, Choices
 import pandas as pd
 from numpy import array, zeros, ceil
@@ -18,6 +19,7 @@ from sklearn.base import BaseEstimator
 from sklearn.preprocessing import OneHotEncoder
 from keras.utils import Sequence as KerasSequence
 from keras.models import model_from_json
+import biom
 
 from .plugin_setup import plugin  # , citations
 from ._keras_classifier import (
@@ -201,6 +203,7 @@ tensorflow_gpu_kludge()
 def fit_classifier_keras(reference_reads: DNAIterator,
                          reference_taxonomy: pd.Series,
                          classifier_specification: dict,
+                         class_weight: biom.Table = None,
                          sequence_encoder: str = 'Seq2VecEncoder',
                          read_length: int = 300,
                          k: int = 7,
@@ -241,7 +244,8 @@ plugin.methods.register_function(
     function=fit_classifier_keras,
     inputs={'reference_reads': FeatureData[Sequence],
             'reference_taxonomy': FeatureData[Taxonomy],
-            'classifier_specification': ClassifierSpecification},
+            'classifier_specification': ClassifierSpecification,
+            'class_weight': FeatureTable[RelativeFrequency]},
     parameters={'sequence_encoder': Str % Choices(
         ['Seq2VecEncoder', 'DNAEncoder', 'KmerEncoder']),
                 'read_length': Int,
