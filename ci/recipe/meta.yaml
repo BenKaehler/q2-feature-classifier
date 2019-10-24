@@ -19,7 +19,7 @@ requirements:
 
   run:
     - python {{ python }}
-    - scikit-learn >=0.21.2
+    - scikit-learn 0.21.2
     - joblib
     - scikit-bio
     - biom-format >=2.1.5,<2.2.0
@@ -28,6 +28,9 @@ requirements:
     - vsearch <=2.7.0
     - qiime2 {{ release }}.*
     - q2-types {{ release }}.*
+    - q2-quality-control {{ release }}.*
+    - q2-taxa {{ release }}.*
+    - q2-feature-table {{ release }}.*
 
 test:
   imports:

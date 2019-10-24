@@ -6,11 +6,16 @@
 # The full license is in the file LICENSE, distributed with this software.
 # ----------------------------------------------------------------------------
 
-from itertools import chain
-
-from qiime2.plugin import Int, Str, Float, Range
-from q2_types.feature_data import FeatureData, Sequence, DNAIterator
 import skbio
+import os
+from joblib import Parallel, delayed, effective_n_jobs
+
+from qiime2.plugin import Int, Str, Float, Range, Choices
+from q2_types.feature_data import (FeatureData, Sequence, DNAIterator,
+                                   DNASequencesDirectoryFormat)
+from q2_types.feature_data._format import DNAFASTAFormat
+from q2_feature_classifier._skl import _chunks
+from q2_feature_classifier.classifier import _autotune_reads_per_batch
 
 from .plugin_setup import plugin
 
@@ -98,75 +103,97 @@ def _approx_match(seq, f_primer, r_primer, identity):
     return None
 
 
-def _gen_reads(sequences,  f_primer, r_primer, trunc_len, trim_left, identity,
+def _gen_reads(sequence, f_primer, r_primer, trunc_len, trim_left, identity,
                min_length, max_length):
     f_primer = skbio.DNA(f_primer)
     r_primer = skbio.DNA(r_primer)
-    for seq in sequences:
-        amp = _exact_match(seq, f_primer, r_primer)
-        if not amp:
-            amp = _exact_match(seq.reverse_complement(), f_primer, r_primer)
-        if not amp:
-            amp = _approx_match(seq, f_primer, r_primer, identity)
-        if not amp:
-            amp = _approx_match(
-                seq.reverse_complement(), f_primer, r_primer, identity)
-        if not amp:
-            continue
-        # we want to filter by max length before trimming
-        if max_length > 0 and len(amp) > max_length:
-            continue
-        if trunc_len > 0:
-            amp = amp[:trunc_len]
-        if trim_left > 0:
-            amp = amp[trim_left:]
-        if min_length > 0 and len(amp) < min_length:
-            continue
-        if not amp:
-            continue
-        yield amp
+    amp = _exact_match(sequence, f_primer, r_primer)
+    if not amp:
+        amp = _exact_match(sequence.reverse_complement(), f_primer, r_primer)
+    if not amp:
+        amp = _approx_match(sequence, f_primer, r_primer, identity)
+    if not amp:
+        amp = _approx_match(
+            sequence.reverse_complement(), f_primer, r_primer, identity)
+    if not amp:
+        return
+    # we want to filter by max length before trimming
+    if max_length > 0 and len(amp) > max_length:
+        return
+    if trunc_len > 0:
+        amp = amp[:trunc_len]
+    if trim_left > 0:
+        amp = amp[trim_left:]
+    if min_length > 0 and len(amp) < min_length:
+        return
+    if not amp:
+        return
+    return amp
 
 
-def extract_reads(sequences: DNAIterator,  f_primer: str, r_primer: str,
-                  trunc_len: int = 0, trim_left: int = 0,
+def extract_reads(sequences: DNASequencesDirectoryFormat, f_primer: str,
+                  r_primer: str, trunc_len: int = 0, trim_left: int = 0,
                   identity: float = 0.8, min_length: int = 50,
-                  max_length: int = 0) -> DNAIterator:
+                  max_length: int = 0, n_jobs: int = 1,
+                  batch_size: int = 'auto') -> DNAFASTAFormat:
     """Extract the read selected by a primer or primer pair. Only sequences
     which match the primers at greater than the specified identity are returned
 
     Parameters
     ----------
-    sequences : DNAIterator
-        an aligned list of skbio.sequence.DNA query sequences
+    sequences : DNASequencesDirectoryFormat
+        An aligned list of skbio.sequence.DNA query sequences
     f_primer : skbio.sequence.DNA
-        forward primer sequence
+        Forward primer sequence
     r_primer : skbio.sequence.DNA
-        reverse primer sequence
+        Reverse primer sequence
     trunc_len : int, optional
-        read is cut to trunc_len if trunc_len is positive. Applied before
+        Read is cut to trunc_len if trunc_len is positive. Applied before
         trim_left.
     trim_left : int, optional
-        trim_left nucleotides are removed from the 5' end if trim_left is
+        `trim_left` nucleotides are removed from the 5' end if trim_left is
         positive. Applied after trunc_len.
     identity : float, optional
-        minimum combined primer match identity threshold. Default: 0.8
+        Minimum combined primer match identity threshold. Default: 0.8
     min_length: int, optional
         Minimum amplicon length. Shorter amplicons are discarded. Default: 50
     max_length: int, optional
         Maximum amplicon length. Longer amplicons are discarded.
+    n_jobs: int, optional
+        Number of seperate processes to break the task into.
+    batch_size: int, optional
+        Number of samples to be processed in one batch.
     Returns
     -------
-    q2_types.DNAIterator
+    q2_types.DNAFASTAFormat
         containing the reads
     """
-    reads = _gen_reads(
-        sequences, f_primer, r_primer, trunc_len, trim_left, identity,
-        min_length, max_length)
-    try:
-        first_read = next(reads)
-    except StopIteration:
-        raise RuntimeError('No matches found') from None
-    return DNAIterator(chain([first_read], reads))
+    if min_length > trunc_len - trim_left and trunc_len > 0:
+        raise ValueError('The minimum length setting is greater than the '
+                         'length of the truncated sequences. This will cause '
+                         'all sequences to be removed from the dataset. To '
+                         'proceed, set a min_length ≤ trunc_len - trim_left.')
+    n_jobs = effective_n_jobs(n_jobs)
+    if batch_size == 'auto':
+        batch_size = _autotune_reads_per_batch(
+            sequences.file.view(DNAFASTAFormat), n_jobs)
+    sequences = sequences.file.view(DNAIterator)
+    ff = DNAFASTAFormat()
+    with open(str(ff), 'a') as fh:
+        with Parallel(n_jobs) as parallel:
+            for chunk in _chunks(sequences, batch_size):
+                amplicons = parallel(delayed(_gen_reads)(sequence, f_primer,
+                                                         r_primer, trunc_len,
+                                                         trim_left, identity,
+                                                         min_length,
+                                                         max_length)
+                                     for sequence in chunk)
+                for amplicon in amplicons:
+                    if amplicon is not None:
+                        skbio.write(amplicon, format='fasta', into=fh)
+    if os.stat(str(ff)).st_size == 0:
+        raise RuntimeError("No matches found")
+    return ff
 
 
 plugin.methods.register_function(
@@ -178,7 +205,9 @@ plugin.methods.register_function(
                 'r_primer': Str,
                 'identity': Float,
                 'min_length': Int % Range(0, None),
-                'max_length': Int % Range(0, None)},
+                'max_length': Int % Range(0, None),
+                'n_jobs': Int % Range(1, None),
+                'batch_size': Int % Range(1, None) | Str % Choices(['auto'])},
     outputs=[('reads', FeatureData[Sequence])],
     name='Extract reads from reference',
     description='Extract sequencing-like reads from a reference database.',
@@ -203,5 +232,11 @@ plugin.methods.register_function(
                                           'before trimming and truncation, '
                                           'so plan accordingly. Set to zero '
                                           '(default) to disable max length '
-                                          'filtering.'}
+                                          'filtering.',
+                            'n_jobs': 'Number of seperate processes to run.',
+                            'batch_size': 'Number of sequences to process in '
+                                          'a batch. The `auto` option is '
+                                          'calculated from the number of '
+                                          'sequences and number of jobs '
+                                          'specified.'}
 )

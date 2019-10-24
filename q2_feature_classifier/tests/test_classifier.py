@@ -59,8 +59,7 @@ class ClassifierTests(FeatureClassifierTestPluginBase):
         # should populate the class weight of a pipeline
         weights = Artifact.import_data(
             'FeatureTable[RelativeFrequency]',
-            self.get_data_path('class_weight.biom'),
-            view_type='BIOMV100Format')
+            self.get_data_path('class_weight.biom'))
         table = weights.view(biom.Table)
 
         svc_spec = [['feat_ext',
@@ -89,8 +88,7 @@ class ClassifierTests(FeatureClassifierTestPluginBase):
         # we should be able to input class_weight to fit_classifier
         weights = Artifact.import_data(
             'FeatureTable[RelativeFrequency]',
-            self.get_data_path('class_weight.biom'),
-            view_type='BIOMV100Format')
+            self.get_data_path('class_weight.biom'))
         reads = Artifact.import_data(
             'FeatureData[Sequence]',
             self.get_data_path('se-dna-sequences.fasta'))

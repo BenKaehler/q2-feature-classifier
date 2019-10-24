@@ -9,6 +9,8 @@
 import pandas as pd
 
 from qiime2.sdk import Artifact
+from qiime2.plugins import feature_classifier
+from q2_feature_classifier._skl import _specific_fitters
 from q2_feature_classifier._blast import classify_consensus_blast
 from q2_feature_classifier._vsearch import classify_consensus_vsearch
 from q2_feature_classifier._consensus_assignment import (
@@ -54,6 +56,88 @@ class ConsensusAssignmentsTests(FeatureClassifierTestPluginBase):
         for taxon in res:
             right += tax[taxon].startswith(res[taxon])
         self.assertGreater(right/len(res), 0.5)
+
+    def test_vsearch_search_exact(self):
+        result = classify_consensus_vsearch(self.reads, self.reads,
+                                            self.taxonomy, search_exact=True)
+        res = result.Taxon.to_dict()
+        tax = self.taxonomy.to_dict()
+        right = 0.
+        for taxon in res:
+            right += tax[taxon].startswith(res[taxon])
+        self.assertGreater(right/len(res), 0.5)
+
+    def test_vsearch_top_hits_only(self):
+        result = classify_consensus_vsearch(self.reads, self.reads,
+                                            self.taxonomy, top_hits_only=True)
+        res = result.Taxon.to_dict()
+        tax = self.taxonomy.to_dict()
+        right = 0.
+        for taxon in res:
+            right += tax[taxon].startswith(res[taxon])
+        self.assertGreater(right/len(res), 0.5)
+
+
+class HybridClassiferTests(FeatureClassifierTestPluginBase):
+    package = 'q2_feature_classifier.tests'
+
+    def setUp(self):
+        super().setUp()
+        taxonomy = Artifact.import_data(
+            'FeatureData[Taxonomy]', self.get_data_path('taxonomy.tsv'))
+        self.taxonomy = taxonomy.view(pd.Series)
+        self.taxartifact = taxonomy
+        # TODO: use `Artifact.import_data` here once we have a transformer
+        # for DNASequencesDirectoryFormat -> DNAFASTAFormat
+        reads_fp = self.get_data_path('se-dna-sequences.fasta')
+        reads = DNAFASTAFormat(reads_fp, mode='r')
+        self.reads = Artifact.import_data('FeatureData[Sequence]', reads)
+
+        fitter = getattr(feature_classifier.methods,
+                         'fit_classifier_' + _specific_fitters[0][0])
+        self.classifier = fitter(self.reads, self.taxartifact).classifier
+
+        self.query = Artifact.import_data('FeatureData[Sequence]', pd.Series(
+            {'A': 'GCCTAACACATGCAAGTCGAACGGCAGCGGGGGAAAGCTTGCTTTCCTGCCGGCGA',
+             'B': 'TAACACATGCAAGTCAACGATGCTTATGTAGCAATATGTAAGTAGAGTGGCGCACG',
+             'C': 'ATACATGCAAGTCGTACGGTATTCCGGTTTCGGCCGGGAGAGAGTGGCGGATGGGT',
+             'D': 'GACGAACGCTGGCGACGTGCTTAACACATGCAAGTCGTGCGAGGACGGGCGGTGCT'
+                  'TGCACTGCTCGAGCCGAGCGGCGGACGGGTGAGTAACACGTGAGCAACCTATCTCC'
+                  'GTGCGGGGGACAACCCGGGGAAACCCGGGCTAATACCG'}))
+
+    def test_classify_hybrid_vsearch_sklearn_all_exact_match(self):
+
+        result, = feature_classifier.actions.classify_hybrid_vsearch_sklearn(
+            query=self.reads, reference_reads=self.reads,
+            reference_taxonomy=self.taxartifact, classifier=self.classifier,
+            prefilter=False)
+        result, = feature_classifier.actions.classify_hybrid_vsearch_sklearn(
+            query=self.reads, reference_reads=self.reads,
+            reference_taxonomy=self.taxartifact, classifier=self.classifier)
+        result = result.view(pd.DataFrame)
+        res = result.Taxon.to_dict()
+        tax = self.taxonomy.to_dict()
+        right = 0.
+        for taxon in res:
+            right += tax[taxon].startswith(res[taxon])
+        self.assertGreater(right/len(res), 0.5)
+
+    def test_classify_hybrid_vsearch_sklearn_mixed_query(self):
+
+        result, = feature_classifier.actions.classify_hybrid_vsearch_sklearn(
+            query=self.query, reference_reads=self.reads,
+            reference_taxonomy=self.taxartifact, classifier=self.classifier,
+            prefilter=True, read_orientation='same', randseed=1001)
+        result = result.view(pd.DataFrame)
+        obs = result.Taxon.to_dict()
+        exp = {'A': 'k__Bacteria; p__Proteobacteria; c__Gammaproteobacteria; '
+                    'o__Legionellales; f__; g__; s__',
+               'B': 'k__Bacteria; p__Chlorobi; c__; o__; f__; g__; s__',
+               'C': 'k__Bacteria; p__Bacteroidetes; c__Cytophagia; '
+                    'o__Cytophagales; f__Cyclobacteriaceae; g__; s__',
+               'D': 'k__Bacteria; p__Gemmatimonadetes; c__Gemm-5; o__; f__; '
+                    'g__; s__'}
+        self.assertDictEqual(obs, exp)
 
 
 class ImportBlastAssignmentTests(FeatureClassifierTestPluginBase):

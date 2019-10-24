@@ -203,7 +203,7 @@ def _autotune_reads_per_batch(reads, n_jobs):
 def classify_sklearn(reads: DNAFASTAFormat, classifier: Pipeline,
                      reads_per_batch: int = 0, n_jobs: int = 1,
                      pre_dispatch: str = '2*n_jobs', confidence: float = 0.7,
-                     read_orientation: str = None
+                     read_orientation: str = 'auto'
                      ) -> pd.DataFrame:
     # autotune reads per batch
     if reads_per_batch == 0:
@@ -229,9 +229,35 @@ _classify_parameters = {
     'reads_per_batch': Int % Range(0, None),
     'n_jobs': Int,
     'pre_dispatch': Str,
-    'confidence': Float,
-    'read_orientation': Str % Choices(['same', 'reverse-complement'])}
+    'confidence': Float % Range(
+        0, 1, inclusive_start=True, inclusive_end=True) | Str % Choices(
+            ['disable']),
+    'read_orientation': Str % Choices(['same', 'reverse-complement', 'auto'])}
 
+_parameter_descriptions = {
+    'confidence': 'Confidence threshold for limiting '
+                  'taxonomic depth. Set to "disable" to disable '
+                  'confidence calculation, or 0 to calculate '
+                  'confidence but not apply it to limit the '
+                  'taxonomic depth of the assignments.',
+    'read_orientation': 'Direction of reads with '
+                        'respect to reference sequences. same will cause '
+                        'reads to be classified unchanged; reverse-'
+                        'complement will cause reads to be reversed '
+                        'and complemented prior to classification. '
+                        '"auto" will autodetect orientation based on the '
+                        'confidence estimates for the first 100 reads.',
+    'reads_per_batch': 'Number of reads to process in each batch. If "auto", '
+                       'this parameter is autoscaled to '
+                       'min( number of query sequences / n_jobs, 20000).',
+    'n_jobs': 'The maximum number of concurrently worker processes. If -1 '
+              'all CPUs are used. If 1 is given, no parallel computing '
+              'code is used at all, which is useful for debugging. For '
+              'n_jobs below -1, (n_cpus + 1 + n_jobs) are used. Thus for '
+              'n_jobs = -2, all CPUs but one are used.',
+    'pre_dispatch': '"all" or expression, as in "3*n_jobs". The number of '
+                    'batches (of tasks) to be pre-dispatched.'
+}
 
 plugin.methods.register_function(
     function=classify_sklearn,
@@ -245,30 +271,7 @@ plugin.methods.register_function(
         'reads': 'The feature data to be classified.',
         'classifier': 'The taxonomic classifier for classifying the reads.'
     },
-    parameter_descriptions={
-        'confidence': 'Confidence threshold for limiting '
-                      'taxonomic depth. Provide -1 to disable '
-                      'confidence calculation, or 0 to calculate '
-                      'confidence but not apply it to limit the '
-                      'taxonomic depth of the assignments.',
-        'read_orientation': 'Direction of reads with '
-                            'respect to reference sequences. same will cause '
-                            'reads to be classified unchanged; reverse-'
-                            'complement will cause reads to be reversed '
-                            'and complemented prior to classification. '
-                            'Default is to autodetect based on the '
-                            'confidence estimates for the first 100 reads.',
-        'reads_per_batch': 'Number of reads to process in each batch. If 0, '
-                           'this parameter is autoscaled to '
-                           'min( number of query sequences / n_jobs, 20000).',
-        'n_jobs': 'The maximum number of concurrently worker processes. If -1 '
-                  'all CPUs are used. If 1 is given, no parallel computing '
-                  'code is used at all, which is useful for debugging. For '
-                  'n_jobs below -1, (n_cpus + 1 + n_jobs) are used. Thus for '
-                  'n_jobs = -2, all CPUs but one are used.',
-        'pre_dispatch': '"all" or expression, as in "3*n_jobs". The number of '
-                        'batches (of tasks) to be pre-dispatched.'
-    },
+    parameter_descriptions={**_parameter_descriptions},
     citations=[citations['pedregosa2011scikit']]
 )
 

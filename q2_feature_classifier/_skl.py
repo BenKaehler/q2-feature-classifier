@@ -38,7 +38,7 @@ def _extract_reads(reads):
 
 
 def predict(reads, pipeline, separator=';', chunk_size=262144, n_jobs=1,
-            pre_dispatch='2*n_jobs', confidence=-1.):
+            pre_dispatch='2*n_jobs', confidence='disable'):
     return (m for c in Parallel(n_jobs=n_jobs, batch_size=1,
                                 pre_dispatch=pre_dispatch)
             (delayed(_predict_chunk)(pipeline, separator, confidence, chunk)
@@ -46,7 +46,7 @@ def predict(reads, pipeline, separator=';', chunk_size=262144, n_jobs=1,
 
 
 def _predict_chunk(pipeline, separator, confidence, chunk):
-    if confidence < 0.:
+    if confidence == 'disable':
         return _predict_chunk_without_conf(pipeline, chunk)
     else:
         return _predict_chunk_with_conf(pipeline, separator, confidence, chunk)

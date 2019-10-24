@@ -7,12 +7,11 @@
 # ----------------------------------------------------------------------------
 
 import os
-from itertools import product, islice
-
 import skbio
-from qiime2.plugins import feature_classifier
+
 from qiime2.sdk import Artifact
-from q2_types.feature_data import FeatureData, Sequence, DNAIterator
+from qiime2.plugins.feature_classifier.actions import extract_reads
+from q2_types.feature_data._format import DNAFASTAFormat
 
 from . import FeatureClassifierTestPluginBase
 
@@ -25,53 +24,87 @@ class CutterTests(FeatureClassifierTestPluginBase):
         seqs = skbio.io.read(self.get_data_path('dna-sequences.fasta'),
                              format='fasta', constructor=skbio.DNA)
         tmpseqs = os.path.join(self.temp_dir.name, 'temp-seqs.fasta')
-        skbio.io.write((s for s in islice(seqs, 10)), 'fasta', tmpseqs)
+        skbio.io.write((s for s in seqs), 'fasta', tmpseqs)
         self.sequences = Artifact.import_data('FeatureData[Sequence]', tmpseqs)
 
-    def test_extract_reads(self):
-        # extract_reads should generate a FeatureData(Sequence) full of reads
-        f_primer = 'AGAGTTTGATCMTGGCTCAG'
-        r_primer = 'GCTGCCTCCCGTAGGAGT'
-        extract_reads = feature_classifier.methods.extract_reads
-        inseqs = list(self.sequences.view(DNAIterator))
+        self.f_primer = 'AGAGA'
+        self.r_primer = 'GCTGC'
 
-        trunc_lens = 0, 75, 5
-        trim_lefts = 0, 5
-        raw_lens = []
-        for trunc_len, trim_left in product(trunc_lens, trim_lefts):
-            if trunc_len == trim_left and trunc_len > 0:
-                with self.assertRaisesRegex(RuntimeError, "No matches found"):
-                    result = extract_reads(
-                        self.sequences, f_primer=f_primer, r_primer=r_primer,
-                        trunc_len=trunc_len, trim_left=trim_left, identity=0.9,
-                        min_length=0, max_length=0)
-                continue
-            result = extract_reads(
-                self.sequences, f_primer=f_primer, r_primer=r_primer,
-                trunc_len=trunc_len, trim_left=trim_left, identity=0.9,
-                min_length=0, max_length=0)
-            self.assertEqual(result.reads.type, FeatureData[Sequence])
-            outseqs = list(result.reads.view(DNAIterator))
-            self.assertGreater(len(outseqs), 0)
-            self.assertLessEqual(len(outseqs), len(inseqs))
-            self.assertTrue(bool(outseqs))
-            if trunc_len != 0:
-                for seq in outseqs:
-                    self.assertEqual(len(seq), trunc_len - trim_left)
-            elif trim_left == 0:
-                for seq in outseqs:
-                    raw_lens.append(len(seq))
-            else:
-                for seq, raw_len in zip(outseqs, raw_lens):
-                    self.assertEqual(len(seq), raw_len - trim_left)
-            # test that length filtering is working
-            with self.assertRaisesRegex(RuntimeError, "No matches found"):
-                result = extract_reads(
-                    self.sequences, f_primer=f_primer, r_primer=r_primer,
-                    trunc_len=trunc_len, trim_left=trim_left, identity=0.9,
-                    min_length=500, max_length=0)
-            with self.assertRaisesRegex(RuntimeError, "No matches found"):
-                result = extract_reads(
-                    self.sequences, f_primer=f_primer, r_primer=r_primer,
-                    trunc_len=trunc_len, trim_left=trim_left, identity=0.9,
-                    min_length=0, max_length=20)
+        self.amplicons = ['ACGT', 'AAGT', 'ACCT', 'ACGG', 'ACTT']
+
+    def _test_results(self, results):
+        for i, result in enumerate(
+                skbio.io.read(str(results.reads.view(DNAFASTAFormat)),
+                              format='fasta')):
+            self.assertEqual(str(result), self.amplicons[i])
+
+    def test_extract_reads_expected(self):
+        results = extract_reads(
+            self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+            min_length=4)
+
+        self._test_results(results)
+
+    def test_extract_reads_manual_batch_size(self):
+        results = extract_reads(
+            self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+            min_length=4, batch_size=10)
+
+        self._test_results(results)
+
+    def test_extract_reads_two_jobs(self):
+        results = extract_reads(
+            self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+            min_length=4, n_jobs=2)
+
+        self._test_results(results)
+
+    def test_extract_reads_expected_degenerate_primers(self):
+        degenerate_f_primer = 'WWWWW'
+        degenerate_r_primer = 'SSSSS'
+
+        degenerate_seqs = skbio.io.read(
+            self.get_data_path('dna-sequences-degenerate-primers.fasta'),
+            format='fasta', constructor=skbio.DNA)
+        degenerate_tmp_seqs = os.path.join(
+            self.temp_dir.name, 'degenerate-tmp-seqs.fasta')
+        skbio.io.write(
+            (s for s in degenerate_seqs), 'fasta', degenerate_tmp_seqs)
+        degenerate_sequences = Artifact.import_data(
+            'FeatureData[Sequence]', degenerate_tmp_seqs)
+
+        results = extract_reads(
+            degenerate_sequences, f_primer=degenerate_f_primer,
+            r_primer=degenerate_r_primer, min_length=4)
+
+        self._test_results(results)
+
+    def test_extract_reads_fail_identity(self):
+        with self.assertRaisesRegex(RuntimeError, "No matches found"):
+            extract_reads(
+                self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+                min_length=4, identity=1)
+
+    def test_extract_reads_fail_min_length(self):
+        with self.assertRaisesRegex(RuntimeError, "No matches found"):
+            extract_reads(
+                self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+                min_length=5)
+
+    def test_extract_reads_fail_max_length(self):
+        with self.assertRaisesRegex(RuntimeError, "No matches found"):
+            extract_reads(
+                self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+                max_length=1)
+
+    def test_extract_reads_fail_trim_entire_read(self):
+        with self.assertRaisesRegex(RuntimeError, "No matches found"):
+            extract_reads(
+                self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+                trim_left=4)
+
+    def test_extract_reads_fail_min_len_greater_than_trunc_len(self):
+        with self.assertRaisesRegex(ValueError, "minimum length setting"):
+            extract_reads(
+                self.sequences, f_primer=self.f_primer, r_primer=self.r_primer,
+                trunc_len=1)
