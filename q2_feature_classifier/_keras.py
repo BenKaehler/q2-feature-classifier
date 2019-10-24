@@ -11,7 +11,7 @@ import json
 from q2_types.feature_data import (
     FeatureData, Taxonomy, Sequence, DNAIterator)
 from q2_types.feature_table import FeatureTable, RelativeFrequency
-from qiime2.plugin import Int, Str, Float, Choices
+from qiime2.plugin import Int, Str, Float, Choices, Range
 import pandas as pd
 from numpy import array, zeros, ceil
 import gensim
@@ -25,6 +25,7 @@ from .plugin_setup import plugin  # , citations
 from ._keras_classifier import (
     ClassifierSpecification, KerasClassifier, Klassifier)
 from .classifier import _load_class
+from ._consensus_assignment import _get_default_unassignable_label
 
 
 class DNAEncoder(BaseEstimator):
@@ -263,18 +264,46 @@ plugin.methods.register_function(
 )  # EEEE input_descriptions, parameter_descriptions, and citations
 
 
+def fortify(y, encoder, confidence):
+    downcoders = [encoder]
+    downsamplers = []
+    for i in encoder.categories_[0][0].split(';')[:-1]:
+        taxa = [[t] for t in downcoders[-1].categories_[0]]
+        taxa = [[';'.join(t.split(';')[:-1])] for t, in taxa]
+        downcoders.append(OneHotEncoder())
+        downcoders[-1].fit(taxa)
+        downsamplers.append(downcoders[-1].transform(taxa).T)
+    downsamplers.append(None)
+
+    taxonomies = []
+    confidences = []
+    for output in y:
+        for encoder, downsampler in zip(downcoders, downsamplers):
+            if output.max() >= confidence:
+                [[taxon]] = encoder.inverse_transform([output])
+                break
+            if downsampler is not None:
+                output = downsampler.dot(output)
+        else:
+            taxon = _get_default_unassignable_label()
+        taxonomies.append(taxon)
+        confidences.append(output.max())
+
+    return taxonomies, confidences
+
+
 def classify_keras(reads: DNAIterator, classifier: Klassifier,
-                   confidence: float, batch_size: int = 256
+                   confidence: float = 0.7, batch_size: int = 256
                    ) -> pd.DataFrame:
     x_encoder, y_encoder, model = classifier
     X, seq_ids = zip(*[(str(s), s.metadata['id']) for s in reads])
     generator = XGenerator(X, x_encoder, batch_size)
     y = model.predict_generator(generator)
-    if confidence < 0:
+    if confidence == 'disable':
         taxonomy = [t for [t] in y_encoder.inverse_transform(y)]
         confidence = [-1]*len(y)
     else:
-        raise NotImplementedError()
+        taxonomy, confidence = fortify(y, y_encoder, confidence)
 
     result = pd.DataFrame(dict(Taxon=taxonomy, Confidence=confidence),
                           index=seq_ids, columns=['Taxon', 'Confidence'])
@@ -286,7 +315,9 @@ plugin.methods.register_function(
     function=classify_keras,
     inputs={'reads': FeatureData[Sequence],
             'classifier': KerasClassifier},
-    parameters={'confidence': Float,
+    parameters={'confidence': Float % Range(
+        0, 1, inclusive_start=True, inclusive_end=True) | Str % Choices(
+        ['disable']),
                 'batch_size': Int},
     outputs=[('classification', FeatureData[Taxonomy])],
     name='Pre-fitted Keras-based taxonomy classifier',
