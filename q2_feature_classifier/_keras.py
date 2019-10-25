@@ -201,6 +201,18 @@ def tensorflow_gpu_kludge():
 tensorflow_gpu_kludge()
 
 
+def _unpack_class_weights(class_weight, encoder):
+    class_weights = []
+    for weights in class_weight.iter_data():
+        class_weights.append(weights)
+    if len(class_weights) > 1:
+        raise ValueError(
+                'Keras classifier does not support multilabel classification')
+    weights = class_weights[0]
+    encoded = encoder.transform([[c] for c in class_weight.ids('observation')])
+    return encoded.T.dot(weights)
+
+
 def fit_classifier_keras(reference_reads: DNAIterator,
                          reference_taxonomy: pd.Series,
                          classifier_specification: dict,
@@ -215,6 +227,7 @@ def fit_classifier_keras(reference_reads: DNAIterator,
                          optimizer: str = 'adam',
                          batch_size: int = 256,
                          epochs: int = 50) -> Klassifier:
+
     X, y = zip(*[(str(s), [reference_taxonomy[s.metadata['id']]])
                  for s in reference_reads])
 
@@ -231,12 +244,15 @@ def fit_classifier_keras(reference_reads: DNAIterator,
     x_encoder.fit(X)
     y_encoder.fit(y)
 
+    if class_weight is not None:
+        class_weight = _unpack_class_weights(class_weight, y_encoder)
+
     generator = TaxonomicGenerator(X, y, x_encoder, y_encoder, batch_size)
     classifier_specification['config']['layers'][-1]['config']['units'] = \
         y_encoder.transform([y[0]]).shape[1]
     model = model_from_json(json.dumps(classifier_specification))
     model.compile(loss=loss, optimizer=optimizer)
-    model.fit_generator(generator, epochs=epochs)
+    model.fit_generator(generator, epochs=epochs, class_weight=class_weight)
 
     return Klassifier(x_encoder, y_encoder, model)
 
