@@ -17,6 +17,7 @@ from numpy import array, zeros, ceil
 import gensim
 from sklearn.base import BaseEstimator
 from sklearn.preprocessing import OneHotEncoder
+from sklearn.feature_extraction import FeatureHasher
 from keras.utils import Sequence as KerasSequence
 from keras.models import model_from_json
 import biom
@@ -59,7 +60,7 @@ class DNAEncoder(BaseEstimator):
         def transform_one(seq):
             x = [self._encoding[c] for c in seq[:self.pad_length]]
             x += [[0, 0, 0, 0]]*max(0, self.pad_length - len(x))
-            return array(x).reshape(self.pad_length, 4, -1)
+            return array(x)  # .reshape(self.pad_length, 4, -1)
 
         return array([transform_one(seq) for seq in X])
 
@@ -83,14 +84,18 @@ class Seq2VecEncoder(BaseEstimator):
             self.pad_length = max(len(s) for s in seqs)
         model = gensim.models.Word2Vec(
                     sentences=seqs, size=self.size, window=self.window,
-                    workers=self.workers, min_count=1)
+                    workers=self.workers, min_count=1, sg=1)
         self.weights = model.wv
 
     def transform(self, X):
         def transform_one(seq):
             sentence = zeros((self.pad_length, self.size))
             for i in range(min(len(seq) - self.k+1, self.pad_length)):
-                sentence[i] = self.weights[seq[i:i+self.k]]
+                try:
+                    sentence[i] = self.weights[seq[i:i+self.k]]
+                except KeyError as ke:
+                    if 'not in vocabulary' not in str(ke):
+                        raise
             return sentence
 
         return array([transform_one(seq) for seq in X])
@@ -99,6 +104,31 @@ class Seq2VecEncoder(BaseEstimator):
         return dict(k=self.k, size=self.size, window=self.window,
                     pad_length=self.pad_length, workers=self.workers,
                     weights=self.weights)
+
+
+class KmerEncoder(BaseEstimator):
+    def __init__(self, k=7, size=8192, pad_length=None, encoder=None):
+        self.k = k
+        self.size = size
+        self.pad_length = pad_length
+        self.encoder = FeatureHasher(n_features=self.size,
+                                     alternate_sign=False)
+
+    def fit(self, X):
+        pass
+
+    def transform(self, X):
+        def transform_one(seq):
+            length = min(len(seq) - self.k+1, self.pad_length)
+            kmers = [{seq[i:i+self.k]: 1} for i in range(length)]
+            if length < self.pad_length:
+                kmers += [dict()]*(self.pad_length - length)
+            return self.encoder.transform(kmers)
+        return array([transform_one(seq).todense() for seq in X])
+
+    def get_params(self):
+        return dict(k=self.k, size=self.size, pad_length=self.pad_length,
+                    encoder=self.encoder)
 
 
 # I'm keeping the spec_from_encoder and encoder_from_spec funtions for the
@@ -227,17 +257,16 @@ def fit_classifier_keras(reference_reads: DNAIterator,
                          optimizer: str = 'adam',
                          batch_size: int = 256,
                          epochs: int = 50) -> Klassifier:
-
     X, y = zip(*[(str(s), [reference_taxonomy[s.metadata['id']]])
-                 for s in reference_reads])
+                 for s in reference_reads
+                 if s.metadata['id'] in reference_taxonomy])
 
     if sequence_encoder == 'DNAEncoder':
         x_encoder = DNAEncoder(read_length)
     elif sequence_encoder == 'Seq2VecEncoder':
         x_encoder = Seq2VecEncoder(k, vec_length, window, read_length, n_jobs)
     elif sequence_encoder == 'KmerEncoder':
-        # probably using HashingVectorizer for this
-        raise NotImplementedError()
+        x_encoder = KmerEncoder(k, vec_length, read_length)
 
     y_encoder = OneHotEncoder(sparse=False, handle_unknown='ignore')
 
@@ -248,6 +277,9 @@ def fit_classifier_keras(reference_reads: DNAIterator,
         class_weight = _unpack_class_weights(class_weight, y_encoder)
 
     generator = TaxonomicGenerator(X, y, x_encoder, y_encoder, batch_size)
+    # EEE So now we need to assert somewhere that keras_version is >= 2.3.0
+    model = model_from_json(json.dumps(classifier_specification))
+    classifier_specification = json.loads(model.to_json())  # to standardise
     classifier_specification['config']['layers'][-1]['config']['units'] = \
         y_encoder.transform([y[0]]).shape[1]
     model = model_from_json(json.dumps(classifier_specification))
